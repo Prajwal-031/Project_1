@@ -1,3 +1,6 @@
+// Score variable
+let score = 0;
+
 // Get the canvas element and context
 const canvas = document.getElementById('modelCanvas');
 const ctx = canvas.getContext('2d');
@@ -41,6 +44,83 @@ let glitchStates = {
     speedMultiplier: 1
 };
 
+// Q-Learning parameters
+const LEARNING_RATE = 0.1;
+const DISCOUNT_FACTOR = 0.95;
+const EPSILON = 0.1;
+
+// Q-table initialization
+let qTable = {};
+
+// Initialize Q-table for a state
+function initializeQTable(state) {
+    if (!qTable[state]) {
+        qTable[state] = {
+            'up': 0,
+            'down': 0,
+            'left': 0,
+            'right': 0
+        };
+    }
+}
+
+// Get current state
+function getState() {
+    // Discretize the state space
+    const gridSize = 20;
+    const playerGridX = Math.floor(player.x / gridSize);
+    const playerGridY = Math.floor(player.y / gridSize);
+    const targetGridX = Math.floor(target.x / gridSize);
+    const targetGridY = Math.floor(target.y / gridSize);
+    
+    return `${playerGridX},${playerGridY},${targetGridX},${targetGridY}`;
+}
+
+// Choose action using epsilon-greedy policy
+function chooseAction(state) {
+    initializeQTable(state);
+    
+    if (Math.random() < EPSILON) {
+        // Random action
+        const actions = ['up', 'down', 'left', 'right'];
+        return actions[Math.floor(Math.random() * actions.length)];
+    } else {
+        // Best action from Q-table
+        const stateActions = qTable[state];
+        return Object.keys(stateActions).reduce((a, b) => 
+            stateActions[a] > stateActions[b] ? a : b
+        );
+    }
+}
+
+// Calculate reward
+function calculateReward() {
+    // Reward for reaching target
+    if (player.x < target.x + target.size &&
+        player.x + player.size > target.x &&
+        player.y < target.y + target.size &&
+        player.y + player.size > target.y) {
+        return 100;
+    }
+    // Reward for moving closer to target
+    const prevDistance = Math.sqrt(
+        Math.pow(target.x - player.x, 2) + 
+        Math.pow(target.y - player.y, 2)
+    );
+    return -prevDistance / 100; // Negative reward based on distance
+}
+
+// Update Q-value
+function updateQValue(state, action, reward, nextState) {
+    initializeQTable(state);
+    initializeQTable(nextState);
+    const currentQ = qTable[state][action];
+    const nextMaxQ = Math.max(...Object.values(qTable[nextState]));
+    qTable[state][action] = currentQ + LEARNING_RATE * (
+        reward + DISCOUNT_FACTOR * nextMaxQ - currentQ
+    );
+}
+
 // Handle keydown events
 document.addEventListener('keydown', (event) => {
     event.preventDefault();
@@ -62,54 +142,49 @@ document.addEventListener('keyup', (event) => {
     }
 });
 
-// Update player position with bugs
+// Modify updatePlayerPosition to use Q-Learning and dynamic speed
 function updatePlayerPosition() {
-    // Random teleports
-    if (Math.random() < player.glitchFactor) {
-        player.x += (Math.random() - 0.5) * 100;
-        player.y += (Math.random() - 0.5) * 100;
+    const currentState = getState();
+    const action = chooseAction(currentState);
+    // Store previous position for reward calculation
+    const prevX = player.x;
+    const prevY = player.y;
+    // Calculate distance to target before move
+    const prevDistance = Math.sqrt(
+        Math.pow(target.x - prevX, 2) + 
+        Math.pow(target.y - prevY, 2)
+    );
+    // Apply the chosen action
+    switch(action) {
+        case 'up': player.y -= player.speed; break;
+        case 'down': player.y += player.speed; break;
+        case 'left': player.x -= player.speed; break;
+        case 'right': player.x += player.speed; break;
     }
-
-    // Randomly reverse controls
-    if (Math.random() < 0.01) {
-        glitchStates.reverseControls = !glitchStates.reverseControls;
-        player.color = glitchStates.reverseControls ? 'purple' : 'blue';
-    }
-
-    // Random speed changes
-    if (Math.random() < 0.02) {
-        glitchStates.speedMultiplier = Math.random() * 3 + 0.5;
-    }
-
-    // Apply movement with bugs
-    let currentSpeed = player.speed * glitchStates.speedMultiplier;
-    if (glitchStates.reverseControls) {
-        if (movement.up) player.y += currentSpeed;
-        if (movement.down) player.y -= currentSpeed;
-        if (movement.left) player.x += currentSpeed;
-        if (movement.right) player.x -= currentSpeed;
+    // Calculate new distance to target
+    const newDistance = Math.sqrt(
+        Math.pow(target.x - player.x, 2) + 
+        Math.pow(target.y - player.y, 2)
+    );
+    // Increase speed if moving towards target
+    if (newDistance < prevDistance) {
+        player.speed = Math.min(player.speed * 1.1, 15); // Increase speed up to max of 15
     } else {
-        if (movement.up) player.y -= currentSpeed;
-        if (movement.down) player.y += currentSpeed;
-        if (movement.left) player.x -= currentSpeed;
-        if (movement.right) player.x += currentSpeed;
+        player.speed = Math.max(player.speed * 0.95, 5); // Decrease speed but not below 5
     }
-
-    // Sometimes ignore boundaries
-    if (Math.random() > 0.8) {
-        // Wrap around screen
-        if (player.x < 0) player.x = canvas.width;
-        if (player.x > canvas.width) player.x = 0;
-        if (player.y < 0) player.y = canvas.height;
-        if (player.y > canvas.height) player.y = 0;
-    }
+    // Keep player in bounds
+    player.x = Math.max(0, Math.min(canvas.width - player.size, player.x));
+    player.y = Math.max(0, Math.min(canvas.height - player.size, player.y));
+    // Calculate reward and update Q-value
+    const nextState = getState();
+    const reward = calculateReward();
+    updateQValue(currentState, action, reward, nextState);
 }
 
 // Modified draw player with glitch effect
 function drawPlayer() {
     ctx.fillStyle = player.color;
     ctx.fillRect(player.x, player.y, player.size, player.size);
-    
     // Sometimes draw ghost images
     if (Math.random() < 0.1) {
         ctx.globalAlpha = 0.3;
@@ -125,16 +200,7 @@ function drawPlayer() {
 
 // Modified target behavior
 function drawTarget() {
-    // Target occasionally moves
-    if (Math.random() < 0.02) {
-        target.x += (Math.random() - 0.5) * 20;
-        target.y += (Math.random() - 0.5) * 20;
-        
-        // Keep target in bounds
-        target.x = Math.max(0, Math.min(canvas.width - target.size, target.x));
-        target.y = Math.max(0, Math.min(canvas.height - target.size, target.y));
-    }
-    
+    // Remove random movement
     ctx.fillStyle = target.color;
     ctx.fillRect(target.x, target.y, target.size, target.size);
 }
@@ -150,9 +216,16 @@ function checkWin() {
         player.x + player.size > target.x &&
         player.y < target.y + target.size &&
         player.y + player.size > target.y) {
+        score++;
         alert('You reached the target!');
         resetGame();
     }
+}
+// Draw the current score
+function drawScore() {
+    ctx.fillStyle = 'black';
+    ctx.font = '20px Arial';
+    ctx.fillText(`Score: ${score}`, 10, 30);
 }
 
 // Reset the game with random target position
@@ -170,6 +243,7 @@ function updateGame() {
     checkWin();
     drawPlayer();
     drawTarget();
+    drawScore();
     requestAnimationFrame(updateGame);
 }
 
