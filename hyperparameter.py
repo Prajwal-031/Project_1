@@ -1,224 +1,109 @@
-# Import necessary libraries for Flask and Machine Learning
-from flask import Flask, render_template_string, jsonify
-from sklearn.model_selection import GridSearchCV, train_test_split, cross_val_score
-from sklearn.tree import DecisionTreeClassifier
+import argparse
+import joblib
+import numpy as np
 from sklearn.datasets import load_iris
-from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import GridSearchCV, train_test_split, cross_val_score
 from sklearn.pipeline import Pipeline
-import json # Used for handling JSON responses, though jsonify often handles it
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import classification_report
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
 
-# Initialize the Flask application
-app = Flask(__name__)
 
-# --- Machine Learning Logic (from your provided code) ---
-# This function encapsulates the ML pipeline and returns the results
-def run_iris_decision_tree_analysis():
-    # Load data
-    iris = load_iris()
-    X = iris.data
-    y = iris.target
+def load_data():
+    data = load_iris()
+    return data.data, data.target
 
-    # Split data into training, validation, and test sets
-    # Using 80% train, 10% validation, 10% test for simplicity and reproducibility
-    X_train_full, X_test, y_train_full, y_test = train_test_split(X, y, test_size=0.05, random_state=42) # Reduced test size
-    X_train, X_val, y_train, y_val = train_test_split(X_train_full, y_train_full, test_size=0.05 / 0.95, random_state=42) # Split train_full further
 
-    # Create a pipeline with scaling and classifier
-    pipeline = Pipeline([
-        ('scaler', StandardScaler()),  # Regularization step: scaling the features
-        ('classifier', DecisionTreeClassifier())
+def split_data(X, y):
+    X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.4, random_state=42)
+    X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=42)
+    return X_train, X_val, X_test, y_train, y_val, y_test
+
+
+def get_classifier(name):
+    if name == 'tree':
+        return DecisionTreeClassifier()
+    elif name == 'svm':
+        return SVC()
+    elif name == 'rf':
+        return RandomForestClassifier()
+    else:
+        raise ValueError("Unsupported classifier")
+
+
+def create_pipeline(classifier):
+    return Pipeline([
+        ('scaler', StandardScaler()),
+        ('classifier', classifier)
     ])
 
-    # Define the parameter grid
-    param_grid = {
-        'classifier__max_depth': [3, 5, 7], # Reduced options for faster execution
-        'classifier__min_samples_split': [2, 5], # Reduced options
-        'classifier__criterion': ['gini', 'entropy']
-    }
 
-    # Set up Grid Search with cross-validation
-    grid_search = GridSearchCV(estimator=pipeline, param_grid=param_grid, cv=3, scoring='accuracy', n_jobs=-1) # Reduced cv for faster execution, n_jobs for parallelism
+def define_param_grid(classifier_name):
+    if classifier_name == 'tree':
+        return {
+            'classifier__max_depth': [3, 5, 7, 10],
+            'classifier__min_samples_split': [2, 5, 10],
+            'classifier__criterion': ['gini', 'entropy']
+        }
+    elif classifier_name == 'svm':
+        return {
+            'classifier__C': [0.1, 1, 10],
+            'classifier__kernel': ['linear', 'rbf']
+        }
+    elif classifier_name == 'rf':
+        return {
+            'classifier__n_estimators': [50, 100],
+            'classifier__max_depth': [5, 10, None],
+            'classifier__criterion': ['gini', 'entropy']
+        }
 
-    # Fit the model
+
+def tune_hyperparameters(pipeline, param_grid, X_train, y_train):
+    grid_search = GridSearchCV(estimator=pipeline, param_grid=param_grid, cv=5, scoring='accuracy')
     grid_search.fit(X_train, y_train)
+    print("Best Hyperparameters:", grid_search.best_params_)
+    return grid_search.best_estimator_
 
-    # Best hyperparameters
-    best_params = grid_search.best_params_
 
-    # Best model
-    best_model = grid_search.best_estimator_
+def evaluate_model(model, X_val, y_val, X_test, y_test, X_train, y_train):
+    val_accuracy = model.score(X_val, y_val)
+    test_accuracy = model.score(X_test, y_test)
+    print("Validation Accuracy:", val_accuracy)
+    print("Test Accuracy:", test_accuracy)
 
-    # Evaluate the model on the validation set
-    val_accuracy = best_model.score(X_val, y_val)
+    print("\nClassification Report (Test Data):")
+    y_pred = model.predict(X_test)
+    print(classification_report(y_test, y_pred))
 
-    # Evaluate the model on the test set
-    test_accuracy = best_model.score(X_test, y_test)
+    scores = cross_val_score(model, X_train, y_train, cv=5)
+    print("Cross-validation scores:", scores)
+    print("Mean cross-validation score:", scores.mean())
 
-    # Cross-validation scores (on the training data)
-    cv_scores = cross_val_score(best_model, X_train, y_train, cv=3) # Reduced cv for faster execution
-    mean_cv_score = cv_scores.mean()
 
-    # Prepare results in a dictionary
-    results = {
-        "best_hyperparameters": best_params,
-        "validation_accuracy": round(val_accuracy, 4), # Round for cleaner output
-        "test_accuracy": round(test_accuracy, 4),
-        "cross_validation_scores": [round(score, 4) for score in cv_scores],
-        "mean_cross_validation_score": round(mean_cv_score, 4)
-    }
-    return results
+def save_model(model, filename="best_model.pkl"):
+    joblib.dump(model, filename)
+    print(f"Model saved to {filename}")
 
-# --- Flask Routes ---
 
-# Define the main route to serve the HTML file
-@app.route('/')
-def index():
-    # The HTML content will be rendered from the client-side HTML provided below
-    # We are using render_template_string for self-contained code.
-    return render_template_string("""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ML Iris Classifier</title>
-    <style>
-        body {
-            font-family: 'Arial', sans-serif;
-            display: flex;
-            flex-direction: column;
-            justify-content: flex-start;
-            align-items: center;
-            min-height: 100vh;
-            margin: 0;
-            background-color: #e0e0e0;
-            padding: 20px;
-            box-sizing: border-box;
-            color: #333;
-        }
-        .container {
-            background: #fff;
-            padding: 30px;
-            border-radius: 10px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-            max-width: 600px;
-            width: 100%;
-            text-align: center;
-            margin-top: 50px;
-        }
-        h1 {
-            color: #4a4a4a;
-            margin-bottom: 25px;
-            font-size: 2.2em;
-            text-shadow: 1px 1px 2px rgba(0,0,0,0.05);
-        }
-        button {
-            background-color: #4CAF50; /* Green */
-            color: white;
-            padding: 12px 25px;
-            border: none;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 1.1em;
-            transition: background-color 0.3s ease, transform 0.1s ease;
-            margin-top: 20px;
-        }
-        button:hover {
-            background-color: #45a049;
-            transform: translateY(-2px);
-        }
-        button:active {
-            transform: translateY(0);
-        }
-        #results {
-            margin-top: 30px;
-            padding: 20px;
-            border: 1px dashed #ccc;
-            border-radius: 8px;
-            text-align: left;
-            background-color: #f9f9f9;
-        }
-        #results p {
-            margin-bottom: 8px;
-            font-size: 1em;
-        }
-        #results strong {
-            color: #0056b3;
-        }
-        .loading-spinner {
-            border: 4px solid rgba(0, 0, 0, 0.1);
-            border-left-color: #4CAF50;
-            border-radius: 50%;
-            width: 24px;
-            height: 24px;
-            animation: spin 1s linear infinite;
-            display: inline-block;
-            vertical-align: middle;
-            margin-right: 10px;
-        }
+if _name_ == "_main_":
+    parser = argparse.ArgumentParser(description="Train ML model with hyperparameter tuning.")
+    parser.add_argument('--classifier', type=str, default='tree',
+                        choices=['tree', 'svm', 'rf'],
+                        help="Classifier to use: tree, svm, or rf")
+    parser.add_argument('--save', action='store_true', help="Save the best model to file.")
+    args = parser.parse_args()
 
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Iris Dataset Classification</h1>
-        <p>Click the button below to run the Decision Tree Classifier on the Iris dataset and see its performance metrics.</p>
-        <button id="runMlButton">Run ML Analysis</button>
-        <div id="results">
-            <p>Results will appear here after the analysis runs.</p>
-        </div>
-    </div>
+    X, y = load_data()
+    X_train, X_val, X_test, y_train, y_val, y_test = split_data(X, y)
 
-    <script>
-        document.getElementById('runMlButton').addEventListener('click', async () => {
-            const resultsDiv = document.getElementById('results');
-            const button = document.getElementById('runMlButton');
+    classifier = get_classifier(args.classifier)
+    pipeline = create_pipeline(classifier)
+    param_grid = define_param_grid(args.classifier)
 
-            // Show loading indicator
-            resultsDiv.innerHTML = '<div class="loading-spinner"></div> Loading...';
-            button.disabled = true;
+    best_model = tune_hyperparameters(pipeline, param_grid, X_train, y_train)
+    evaluate_model(best_model, X_val, y_val, X_test, y_test, X_train, y_train)
 
-            try {
-                const response = await fetch('/run_ml');
-                const data = await response.json();
-
-                if (response.ok) {
-                    resultsDiv.innerHTML = `
-                        <p><strong>Best Hyperparameters:</strong> ${JSON.stringify(data.best_hyperparameters)}</p>
-                        <p><strong>Validation Accuracy:</strong> ${data.validation_accuracy}</p>
-                        <p><strong>Test Accuracy:</strong> ${data.test_accuracy}</p>
-                        <p><strong>Cross-validation Scores:</strong> ${data.cross_validation_scores.join(', ')}</p>
-                        <p><strong>Mean Cross-validation Score:</strong> ${data.mean_cross_validation_score}</p>
-                    `;
-                } else {
-                    resultsDiv.innerHTML = `<p style="color: red;">Error: ${data.error || 'Failed to fetch results'}</p>`;
-                }
-            } catch (error) {
-                resultsDiv.innerHTML = `<p style="color: red;">An error occurred: ${error.message}</p>`;
-                console.error('Fetch error:', error);
-            } finally {
-                button.disabled = false;
-            }
-        });
-    </script>
-</body>
-</html>
-    """)
-
-# Define the API endpoint to run the ML analysis
-@app.route('/run_ml')
-def run_ml():
-    try:
-        ml_results = run_iris_decision_tree_analysis()
-        return jsonify(ml_results)
-    except Exception as e:
-        # Basic error handling for the ML part
-        return jsonify({"error": str(e)}), 500
-
-# Run the Flask app
-if __name__ == '__main__':
-    app.run(debug=True) # debug=True is good for development
+    if args.save:
+        save_model(best_model)
